@@ -6,6 +6,7 @@
 
 import logging
 import time
+import re
 import xml.etree.ElementTree as ET
 try:
   # Python 2.6
@@ -33,10 +34,22 @@ def init(elastiq_inst):
 #
 #  @return The number of inserted jobs on success, or None on failure.
 def poll_queue():
+  n_jobs_per_vm = elastiq_instance.cf['elastiq']['n_jobs_per_vm']
   ret = elastiq_instance.robust_cmd(
-    ['condor_q', '-global', '-attributes', 'JobStatus', '-long'], max_attempts=5)
+    ['condor_q', '-global', '-attributes', 'MinHosts,RequiresWholeMachine', '-constraint', 'JobStatus == 1','-long'], max_attempts=5)
   if ret and 'output' in ret:
-    return ret['output'].count('JobStatus = 1')
+    out=0
+    cont=ret['output'].split('\n\n')
+    for j in cont:
+      if (j.strip() != ""):
+        n_hosts=re.findall(r'\d+',j)
+        if re.findall(r'RequiresWholeMachine = true',j,re.IGNORECASE):
+          out+= float(n_hosts[0])*n_jobs_per_vm
+          #elastiq_instance.logctl.debug('found waiting job needing %d machines'%(float(n_hosts[0])*n_jobs_per_vm))
+        else:
+          out+= float(n_hosts[0])
+          #elastiq_instance.logctl.debug('found waiting job needing %d machines'%(float(n_hosts[0])))
+    return out
   return None
 
 
