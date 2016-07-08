@@ -36,20 +36,19 @@ def init(elastiq_inst):
 def poll_queue():
   n_jobs_per_vm = elastiq_instance.cf['elastiq']['n_jobs_per_vm']
   ret = elastiq_instance.robust_cmd(
-    ['condor_q', '-global', '-attributes', 'MinHosts,RequiresWholeMachine', '-constraint', 'JobStatus == 1','-long'], max_attempts=5)
+    ['condor_q', '-global', '-attributes', 'MinHosts,RequiresWholeMachine', '-constraint', 'JobStatus == 1', '-long'], max_attempts = 5)
   if ret and 'output' in ret:
-    out=0
-    cont=ret['output'].split('\n\n')
+    n_waiting = 0
+    cont = ret['output'].split('\n\n')
     for j in cont:
-      if (j.strip() != ""):
-        n_hosts=re.findall(r'\d+',j)
-        if re.findall(r'RequiresWholeMachine = true',j,re.IGNORECASE):
-          out+= float(n_hosts[0])*n_jobs_per_vm
-          #elastiq_instance.logctl.debug('found waiting job needing %d machines'%(float(n_hosts[0])*n_jobs_per_vm))
+      if j.strip() != "":
+        hosts = re.findall(r'\d+', j)
+        n_hosts = float(hosts[0])
+        if "requireswholemachine = true" in j.lower():
+          n_waiting += n_hosts * n_jobs_per_vm
         else:
-          out+= float(n_hosts[0])
-          #elastiq_instance.logctl.debug('found waiting job needing %d machines'%(float(n_hosts[0])))
-    return out
+          n_waiting += n_hosts
+    return n_waiting
   return None
 
 
