@@ -6,6 +6,7 @@
 
 import logging
 import time
+import re
 import xml.etree.ElementTree as ET
 try:
   # Python 2.6
@@ -33,10 +34,21 @@ def init(elastiq_inst):
 #
 #  @return The number of inserted jobs on success, or None on failure.
 def poll_queue():
+  n_jobs_per_vm = elastiq_instance.cf['elastiq']['n_jobs_per_vm']
   ret = elastiq_instance.robust_cmd(
-    ['condor_q', '-global', '-attributes', 'JobStatus', '-long'], max_attempts=5)
+    ['condor_q', '-global', '-attributes', 'MinHosts,RequestCpus', '-constraint', 'JobStatus == 1', '-long'], max_attempts=5)
   if ret and 'output' in ret:
-    return ret['output'].count('JobStatus = 1')
+    n_waiting = 0
+    cont = ret['output'].split('\n\n')
+    for j in cont:
+      if j.strip() != "":
+        hosts = re.findall(r'MinHosts = \d+', j)
+        n_hosts = float(re.findall(r'\d+',hosts[0])[0])
+        cpus = re.findall(r'RequestCpus = \d+', j)
+        n_cpus = float(re.findall(r'\d+',cpus[0])[0])
+        n_waiting += n_hosts * n_cpus
+        elastiq_instance.logctl.debug('Found: %d hosts, %d cpus' %(n_hosts,n_cpus))
+    return n_waiting
   return None
 
 
@@ -45,7 +57,7 @@ def poll_queue():
 #  @return An array of hosts, each one of them with its number of running jobs, or None on error
 def poll_status(current_workers_status, valid_ipv4s=None):
   ret = elastiq_instance.robust_cmd(
-    ['condor_status', '-xml', '-attributes', 'Activity,Machine'], max_attempts=2)
+    ['condor_status', '-xml', '-attributes', 'Activity,Machine,Cpus'], max_attempts=2)
   if ret is None or 'output' not in ret:
     return None
 
@@ -63,11 +75,13 @@ def poll_status(current_workers_status, valid_ipv4s=None):
       #   <a n="MyType">Machine</a>
       #   <a n="Machine">host.name</a>
       #   <a n="Activity">Idle</a>
+      #   <a n="Cpus">1</a>
       # </c>
       params = {
         'MyType': None,
         'Machine': None,
-        'Activity': None
+        'Activity': None,
+        'Cpus': None
       }
 
       for xa in xc.findall("./a"):
@@ -76,7 +90,10 @@ def poll_status(current_workers_status, valid_ipv4s=None):
           continue
         for k in params:
           if n == k:
-            xs = xa.find("./s")
+            if k == "Cpus":
+              xs = xa.find("./i")
+            else:
+              xs = xa.find("./s")
             if xs is not None:
               params[n] = xs.text
 
@@ -84,6 +101,7 @@ def poll_status(current_workers_status, valid_ipv4s=None):
       valid = True
       for k,v in params.iteritems():
         if v is None:
+          elastiq_instance.logctl.error('Key not found: %s' % k)
           valid = False
           break
       if valid == False:
@@ -96,6 +114,7 @@ def poll_status(current_workers_status, valid_ipv4s=None):
       # Simpler variables
       host = params['Machine']
       activity = params['Activity']
+      cpus = float(params['Cpus'])
       elastiq_instance.logctl.debug('Found: %s is %s' % (host,activity))
 
       # If we have a list of valid IPv4 addresses, check if it matches.
@@ -117,14 +136,14 @@ def poll_status(current_workers_status, valid_ipv4s=None):
       if host in workers_status:
         # Update current entry ('jobs' key is there always)
         if not idle:
-          workers_status[host]['jobs'] = workers_status[host]['jobs'] + 1
+          workers_status[host]['jobs'] = workers_status[host]['jobs'] + 1 * cpus
       else:
         # Entry not yet present
         workers_status[host] = {}
         if idle:
           workers_status[host]['jobs'] = 0
         else:
-          workers_status[host]['jobs'] = 1
+          workers_status[host]['jobs'] = 1 * cpus
 
   except XmlParseError as e:
     elastiq_instance.logctl.error('Invalid XML: %s' % e)
